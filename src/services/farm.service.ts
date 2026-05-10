@@ -48,6 +48,7 @@ import {
     User,
 } from "../models";
 import { ApiError } from "../utils/apiError";
+import { isMongooseVersionError } from "../utils/mongooseVersion";
 import { ensureItemCatalog } from "./itemCatalog.service";
 import { buildFarmProductMintProof, type FarmProductMintProofResponse } from "./mintProof.service";
 
@@ -72,11 +73,6 @@ async function getFarmRpcDeps() {
 
 function isMongoDuplicateKeyError(err: unknown): boolean {
     return Boolean(err && typeof err === "object" && "code" in err && (err as { code: number }).code === 11000);
-}
-
-/** Concurrent `save()` on the same User bumps `__v` — second writer gets VersionError. */
-function isMongooseVersionError(err: unknown): boolean {
-    return typeof err === "object" && err !== null && "name" in err && (err as { name: string }).name === "VersionError";
 }
 
 function speciesFromEggNftSpeciesCode(code: number): SpeciesId | null {
@@ -277,31 +273,51 @@ async function itemObjectId(itemKey: string): Promise<Types.ObjectId> {
 
 async function addInventory(userId: string, itemKey: string, quantity: number): Promise<void> {
     if (quantity < 1) return;
-    const user = await User.findById(userId);
-    if (!user) throw new ApiError(404, "User not found");
     const oid = await itemObjectId(itemKey);
-    const inv = (user.inventory ?? []) as InvSlot[];
-    const hit = inv.find((s) => String(s.itemId) === String(oid));
-    if (hit) hit.quantity += quantity;
-    else inv.push({ itemId: oid, quantity });
-    user.inventory = inv;
-    user.markModified("inventory");
-    await user.save();
+    const maxAttempts = 12;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const user = await User.findById(userId);
+        if (!user) throw new ApiError(404, "User not found");
+        const inv = (user.inventory ?? []) as InvSlot[];
+        const hit = inv.find((s) => String(s.itemId) === String(oid));
+        if (hit) hit.quantity += quantity;
+        else inv.push({ itemId: oid, quantity });
+        user.inventory = inv;
+        user.markModified("inventory");
+        try {
+            await user.save();
+            return;
+        } catch (err: unknown) {
+            if (isMongooseVersionError(err) && attempt < maxAttempts - 1) continue;
+            throw err;
+        }
+    }
+    throw new ApiError(409, "Inventory update conflict — please retry.");
 }
 
 async function takeInventory(userId: string, itemKey: string, quantity: number): Promise<void> {
-    const user = await User.findById(userId);
-    if (!user) throw new ApiError(404, "User not found");
     const oid = await itemObjectId(itemKey);
-    const inv = (user.inventory ?? []) as InvSlot[];
-    const hit = inv.find((s) => String(s.itemId) === String(oid));
-    if (!hit || hit.quantity < quantity) {
-        throw new ApiError(400, `Not enough ${itemKey}`);
+    const maxAttempts = 12;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const user = await User.findById(userId);
+        if (!user) throw new ApiError(404, "User not found");
+        const inv = (user.inventory ?? []) as InvSlot[];
+        const hit = inv.find((s) => String(s.itemId) === String(oid));
+        if (!hit || hit.quantity < quantity) {
+            throw new ApiError(400, `Not enough ${itemKey}`);
+        }
+        hit.quantity -= quantity;
+        user.inventory = inv.filter((s) => s.quantity > 0);
+        user.markModified("inventory");
+        try {
+            await user.save();
+            return;
+        } catch (err: unknown) {
+            if (isMongooseVersionError(err) && attempt < maxAttempts - 1) continue;
+            throw err;
+        }
     }
-    hit.quantity -= quantity;
-    user.inventory = inv.filter((s) => s.quantity > 0);
-    user.markModified("inventory");
-    await user.save();
+    throw new ApiError(409, "Inventory update conflict — please retry.");
 }
 
 async function inventoryQty(userId: string, itemKey: string): Promise<number> {

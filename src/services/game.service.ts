@@ -12,6 +12,7 @@ import {
 import { isFastTestEnabled } from "../config/fastTest";
 import { Animal, Item, User } from "../models";
 import { ApiError } from "../utils/apiError";
+import { isMongooseVersionError } from "../utils/mongooseVersion";
 import { processFarmForUser, applyFarmOffchainQueueCollect } from "./farm.service";
 
 export type InventoryCollectEntry = {
@@ -89,43 +90,53 @@ export const collectItemsForUser = async (userId: string, body: unknown) => {
         );
     }
 
-    let user = await User.findById(id);
-    if (!user) {
-        throw new ApiError(404, "User not found");
-    }
-
-    const inventory = [...(user.inventory ?? [])];
-
-    for (const { itemKey, quantity } of directAdds) {
-        let item = await Item.findOne({ itemKey });
-        if (!item) {
-            item = await Item.create({
-                itemKey,
-                name: itemKey,
-                description: "",
-                kind: "off",
-            });
-        }
-
-        const itemObjectId = item._id as Types.ObjectId;
-        const existing = inventory.find(
-            (slot: { itemId: Types.ObjectId; quantity: number }) => String(slot.itemId) === String(itemObjectId),
-        );
-
-        if (existing) {
-            existing.quantity += quantity;
-        } else {
-            inventory.push({
-                itemId: itemObjectId,
-                quantity,
-            });
-        }
-    }
-
     if (directAdds.length > 0) {
-        user.inventory = inventory;
-        user.markModified("inventory");
-        await user.save();
+        const maxAttempts = 12;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const user = await User.findById(id);
+            if (!user) {
+                throw new ApiError(404, "User not found");
+            }
+
+            const inventory = [...(user.inventory ?? [])];
+
+            for (const { itemKey, quantity } of directAdds) {
+                let item = await Item.findOne({ itemKey });
+                if (!item) {
+                    item = await Item.create({
+                        itemKey,
+                        name: itemKey,
+                        description: "",
+                        kind: "off",
+                    });
+                }
+
+                const itemObjectId = item._id as Types.ObjectId;
+                const existing = inventory.find(
+                    (slot: { itemId: Types.ObjectId; quantity: number }) =>
+                        String(slot.itemId) === String(itemObjectId),
+                );
+
+                if (existing) {
+                    existing.quantity += quantity;
+                } else {
+                    inventory.push({
+                        itemId: itemObjectId,
+                        quantity,
+                    });
+                }
+            }
+
+            user.inventory = inventory;
+            user.markModified("inventory");
+            try {
+                await user.save();
+                break;
+            } catch (err: unknown) {
+                if (isMongooseVersionError(err) && attempt < maxAttempts - 1) continue;
+                throw err;
+            }
+        }
     }
 
     const updated = await User.findById(id).populate("inventory.itemId").lean();
