@@ -1,11 +1,18 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-const sharedDistEntry = resolve(process.cwd(), "..", "shared", "dist", "index.js");
+const cwd = process.cwd();
+const candidates = [
+  resolve(cwd, "node_modules", "@fantastic-farm", "shared", "dist", "index.js"),
+  resolve(cwd, "..", "shared", "dist", "index.js"),
+];
 
-if (!existsSync(sharedDistEntry)) {
-  console.error("[check:shared] Missing ../shared/dist/index.js");
-  console.error("[check:shared] Build shared first: `cd ../shared && npm install && npm run build`");
+const sharedDistEntry = candidates.find((p) => existsSync(p));
+
+if (!sharedDistEntry) {
+  console.error("[check:shared] Missing shared build output. Expected one of:");
+  for (const p of candidates) console.error("  -", p);
+  console.error("[check:shared] Install deps (`npm install`) or build sibling: `cd ../shared && npm run build`");
   process.exit(1);
 }
 

@@ -4,8 +4,18 @@ This backend is intended to run as a long-lived Node service (not serverless fun
 
 ## Build / Start commands
 
-- Build command: `npm install && npm run build`
+- Build command (needs GitHub Packages auth — see below):  
+  `echo "//npm.pkg.github.com/:_authToken:${NODE_AUTH_TOKEN}" >> .npmrc && npm ci && npm run build`
 - Start command: `npm run start:prod`
+
+**GitHub Packages:** set secret **`NODE_AUTH_TOKEN`** (PAT with `read:packages`) on the host before `npm ci`. Repo includes [`render.yaml`](./render.yaml) for Render Blueprint (branch **`production`**).
+
+## Render (quick)
+
+1. Push branch **`production`** to GitHub (`fantastic-farm-api`).
+2. Render Dashboard → **New** → **Blueprint** → connect repo → pick branch **`production`** → apply `render.yaml`.
+3. In the web service **Environment**, fill every `sync: false` secret from [`.env.example`](./.env.example) (Mongo, JWT, Sui, on-chain IDs, etc.). **Never** commit `.env`.
+4. **Health check** path: `/api/health` (200).
 
 ## Required environment variables
 
@@ -37,11 +47,6 @@ Optional studio swap variables:
 - Path: `/api/health`
 - Success code: `200`
 
-## Important note about shared package (temporary model)
+## Shared package
 
-Because backend uses `file:../shared`, deployment must include both folders and build `shared` first.
-
-Suggested sequence in CI/workspace init:
-
-1. `cd ../shared && npm install && npm run build`
-2. `cd ../backend-repo && npm install && npm run build && npm run start:prod`
+Backend depends on **`@tuanle0909/fantastic-farm-shared`** via npm alias (GitHub Packages). Use committed [`.npmrc`](./.npmrc) plus **`NODE_AUTH_TOKEN`** during install (see build command above). No sibling `../shared` folder required on the server.

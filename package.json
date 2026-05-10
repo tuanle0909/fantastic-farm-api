@@ -16,7 +16,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@fantastic-farm/shared": "file:../shared",
+    "@fantastic-farm/shared": "npm:@tuanle0909/fantastic-farm-shared@^0.0.1",
     "@mysten/sui": "^2.16.0",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",

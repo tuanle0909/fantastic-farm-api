@@ -15,34 +15,29 @@ This folder is ready to be moved into a standalone backend repository for indepe
 
 Do not copy `node_modules/`, `.env`, logs, or local editor artifacts.
 
-## 2) Current dependency model (temporary)
+## 2) Shared package (GitHub Packages)
 
-Backend currently uses:
+Backend resolves `@fantastic-farm/shared` via **npm alias** to `@tuanle0909/fantastic-farm-shared` published on GitHub Packages.
 
-```json
-"@fantastic-farm/shared": "file:../shared"
+Committed [`.npmrc`](./.npmrc) sets `@tuanle0909:registry=https://npm.pkg.github.com`.
+
+**Local / CI install:** create a GitHub PAT with `read:packages`, then before `npm ci`:
+
+```bash
+echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> .npmrc
 ```
 
-So your deployment workspace must include sibling folders:
+Or log in once: `npm login --scope=@tuanle0909 --registry=https://npm.pkg.github.com`.
 
-- `backend-repo/` (this BE code)
-- `shared/` (the shared package source)
+**Monorepo dev:** if `../shared` exists with matching package name, npm may **link** the local folder — same imports. See [`../shared/PUBLISH_GITHUB.md`](../shared/PUBLISH_GITHUB.md) to publish new versions.
 
-## 3) Local run in split mode
+The script `npm run check:shared` accepts either `node_modules/@fantastic-farm/shared/dist/index.js` or `../shared/dist/index.js`.
 
-From sibling root:
+## 3) Local run (split clone)
 
-1. Build shared:
-   - `cd shared`
-   - `npm install`
-   - `npm run build`
-2. Build + run backend:
-   - `cd ../backend-repo`
-   - `npm install`
-   - `npm run build`
-   - `npm run start:prod`
-
-The script `npm run check:shared` fails fast if `../shared/dist/index.js` is missing.
+1. `npm install` (with GitHub Packages auth as above)
+2. `npm run build`
+3. `npm run start:prod`
 
 ## 4) Health check
 
