@@ -12,10 +12,7 @@ services:
     region: singapore
     plan: free
     branch: production
-    buildCommand: |
-      echo "//npm.pkg.github.com/:_authToken:${NODE_AUTH_TOKEN}" >> .npmrc
-      npm ci
-      npm run build
+    buildCommand: bash scripts/render-build.sh
     startCommand: npm run start:prod
     healthCheckPath: /api/health
     envVars:

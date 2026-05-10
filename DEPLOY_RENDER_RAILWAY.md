@@ -5,7 +5,8 @@ This backend is intended to run as a long-lived Node service (not serverless fun
 ## Build / Start commands
 
 - Build command (needs GitHub Packages auth — see below):  
-  `echo "//npm.pkg.github.com/:_authToken:${NODE_AUTH_TOKEN}" >> .npmrc && npm ci && npm run build`
+  `bash scripts/render-build.sh`  
+  (Tránh gõ `echo ... ${NODE_AUTH_TOKEN}` trực tiếp trong ô Render nếu cả dòng lỡ bị bọc nháy đơn — token sẽ không expand và vẫn 401.)
 - Start command: `npm run start:prod`
 
 **GitHub Packages:** set secret **`NODE_AUTH_TOKEN`** (PAT with `read:packages`) on the host before `npm ci`. Repo includes [`render.yaml`](./render.yaml) for Render Blueprint (branch **`production`**).
