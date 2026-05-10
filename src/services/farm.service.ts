@@ -74,6 +74,11 @@ function isMongoDuplicateKeyError(err: unknown): boolean {
     return Boolean(err && typeof err === "object" && "code" in err && (err as { code: number }).code === 11000);
 }
 
+/** Concurrent `save()` on the same User bumps `__v` — second writer gets VersionError. */
+function isMongooseVersionError(err: unknown): boolean {
+    return typeof err === "object" && err !== null && "name" in err && (err as { name: string }).name === "VersionError";
+}
+
 function speciesFromEggNftSpeciesCode(code: number): SpeciesId | null {
     const row = (Object.entries(SPECIES_PRODUCT_CODE) as [SpeciesId, number][]).find(([, v]) => v === code);
     return row?.[0] ?? null;
@@ -137,59 +142,68 @@ function consumeOffChainFifoByItemKey(
 
 export async function enforceFarmDropQueueCap(userId: string): Promise<void> {
     await ensureItemCatalog();
-    const pulledMintIds: string[] = [];
-    let user = await User.findById(userId);
-    if (!user) return;
-
-    for (;;) {
-        const lvl = levelFromExp(user.exp ?? 0);
-        const cap = farmSpawnDropQueueCapacityForLevel(lvl);
-
-        let offs = [...((user.pendingOffChainFarmDrops ?? []) as unknown as PendingOffChainFarmDropDoc[])];
-        const mints = [...((user.pendingFarmProductMints ?? []) as unknown as PendingMintDoc[])];
-
-        if (offs.length + mints.length <= cap) {
-            user.pendingOffChainFarmDrops = offs;
-            user.pendingFarmProductMints = mints;
-            user.markModified("pendingOffChainFarmDrops");
-            user.markModified("pendingFarmProductMints");
-            await user.save();
-            if (pulledMintIds.length > 0) {
-                await FarmProductMintProofReservation.deleteMany({
-                    userId: user._id,
-                    pendingMintId: { $in: [...new Set(pulledMintIds)] },
-                });
-            }
-            return;
-        }
-
-        const offHead = offs[0];
-        const mintHead = mints[0];
-        let evictMint: boolean;
-        if (!offHead) evictMint = true;
-        else if (!mintHead) evictMint = false;
-        else {
-            const tMint = pendingMintQueuedMs(mintHead);
-            const tOff = queuedOffFarmDropMs(offHead);
-            evictMint = tMint < tOff;
-        }
-
-        if (evictMint) {
-            const head = mints.shift();
-            if (head?._id) pulledMintIds.push(String(head._id));
-        } else {
-            offs.shift();
-        }
-
-        user.pendingOffChainFarmDrops = offs;
-        user.pendingFarmProductMints = mints;
-        user.markModified("pendingOffChainFarmDrops");
-        user.markModified("pendingFarmProductMints");
-        await user.save();
-
-        user = await User.findById(userId);
+    const maxAttempts = 16;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const pulledMintIds: string[] = [];
+        let user = await User.findById(userId);
         if (!user) return;
+
+        try {
+            for (;;) {
+                const lvl = levelFromExp(user.exp ?? 0);
+                const cap = farmSpawnDropQueueCapacityForLevel(lvl);
+
+                let offs = [...((user.pendingOffChainFarmDrops ?? []) as unknown as PendingOffChainFarmDropDoc[])];
+                const mints = [...((user.pendingFarmProductMints ?? []) as unknown as PendingMintDoc[])];
+
+                if (offs.length + mints.length <= cap) {
+                    user.pendingOffChainFarmDrops = offs;
+                    user.pendingFarmProductMints = mints;
+                    user.markModified("pendingOffChainFarmDrops");
+                    user.markModified("pendingFarmProductMints");
+                    await user.save();
+                    if (pulledMintIds.length > 0) {
+                        await FarmProductMintProofReservation.deleteMany({
+                            userId: user._id,
+                            pendingMintId: { $in: [...new Set(pulledMintIds)] },
+                        });
+                    }
+                    return;
+                }
+
+                const offHead = offs[0];
+                const mintHead = mints[0];
+                let evictMint: boolean;
+                if (!offHead) evictMint = true;
+                else if (!mintHead) evictMint = false;
+                else {
+                    const tMint = pendingMintQueuedMs(mintHead);
+                    const tOff = queuedOffFarmDropMs(offHead);
+                    evictMint = tMint < tOff;
+                }
+
+                if (evictMint) {
+                    const head = mints.shift();
+                    if (head?._id) pulledMintIds.push(String(head._id));
+                } else {
+                    offs.shift();
+                }
+
+                user.pendingOffChainFarmDrops = offs;
+                user.pendingFarmProductMints = mints;
+                user.markModified("pendingOffChainFarmDrops");
+                user.markModified("pendingFarmProductMints");
+                await user.save();
+
+                user = await User.findById(userId);
+                if (!user) return;
+            }
+        } catch (err: unknown) {
+            if (isMongooseVersionError(err) && attempt < maxAttempts - 1) continue;
+            throw err;
+        }
     }
+    throw new ApiError(409, "Farm queue is busy — please retry in a moment.");
 }
 
 async function pushOffChainFarmSpawnDrop(userId: string, itemKey: string, quantity: number): Promise<void> {
@@ -220,28 +234,37 @@ export async function applyFarmOffchainQueueCollect(
         needByKey.set(k, (needByKey.get(k) ?? 0) + quantity);
     }
 
-    const user = await User.findById(userId);
-    if (!user) throw new ApiError(404, "User not found");
+    const maxAttempts = 12;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const user = await User.findById(userId);
+        if (!user) throw new ApiError(404, "User not found");
 
-    let slots = [...((user.pendingOffChainFarmDrops ?? []) as unknown as PendingOffChainFarmDropDoc[])];
-    for (const [itemKey, want] of needByKey.entries()) {
-        const { next, taken } = consumeOffChainFifoByItemKey(slots, itemKey, want);
-        if (taken < want) {
-            throw new ApiError(
-                400,
-                `Not enough "${itemKey}" on the farm (${taken}/${want} queued). Harvest more or refresh.`,
-            );
+        let slots = [...((user.pendingOffChainFarmDrops ?? []) as unknown as PendingOffChainFarmDropDoc[])];
+        for (const [itemKey, want] of needByKey.entries()) {
+            const { next, taken } = consumeOffChainFifoByItemKey(slots, itemKey, want);
+            if (taken < want) {
+                throw new ApiError(
+                    400,
+                    `Not enough "${itemKey}" on the farm (${taken}/${want} queued). Harvest more or refresh.`,
+                );
+            }
+            slots = next;
         }
-        slots = next;
-    }
 
-    user.pendingOffChainFarmDrops = slots;
-    user.markModified("pendingOffChainFarmDrops");
-    await user.save();
-
-    for (const [itemKey, want] of needByKey.entries()) {
-        await addInventory(userId, itemKey, want);
+        user.pendingOffChainFarmDrops = slots;
+        user.markModified("pendingOffChainFarmDrops");
+        try {
+            await user.save();
+            for (const [itemKey, want] of needByKey.entries()) {
+                await addInventory(userId, itemKey, want);
+            }
+            return;
+        } catch (err: unknown) {
+            if (isMongooseVersionError(err) && attempt < maxAttempts - 1) continue;
+            throw err;
+        }
     }
+    throw new ApiError(409, "Could not update farm queue — please retry.");
 }
 
 async function itemObjectId(itemKey: string): Promise<Types.ObjectId> {
