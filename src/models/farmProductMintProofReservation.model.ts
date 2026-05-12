@@ -1,7 +1,7 @@
 import mongoose, { Schema, Types } from "mongoose";
 
-/** Wall-clock pad beyond proof TTL (`mintProof.service` ~5m) — after this, another `/mint-farm-product-proof` is allowed if pending still exists. */
-export const RESERVATION_TTL_MS = 6 * 60_000;
+/** After this, another `/mint-farm-product-proof` is allowed if pending still exists (BE-only; was 6m). */
+export const RESERVATION_TTL_MS = 60_000;
 
 /** Tracks one in-flight mint proof per pending drop so users cannot spam new proofs/nonces without consuming the drop. */
 const farmProductMintProofReservationSchema = new Schema(

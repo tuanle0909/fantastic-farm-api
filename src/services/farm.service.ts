@@ -575,7 +575,7 @@ export async function peekPendingFarmProductMint(
 }
 
 /**
- * Issues one proof per pending drop: blocks parallel `/mint-farm-product-proof` until reservation expires (~6 min)
+ * Issues one proof per pending drop: blocks parallel `/mint-farm-product-proof` until reservation expires (~1 min)
  * or finalize clears it — prevents chaining multiple successful on-chain mints from one drop.
  */
 export async function issueFarmProductMintProofWithReservation(
